@@ -1,0 +1,7 @@
+Parameters:
+  DomainName: kjnghr.com
+  AppDomainName: www
+  AmiId: ami-0df7a6b6b9b3d5d24
+  AppInstanceType: t3.small
+  DatabaseInstanceClass: db.t3.medium
+  RedisNodeType: cache.t3.micro

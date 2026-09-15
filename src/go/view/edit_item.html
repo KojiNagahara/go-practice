@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>商品編集 | Go Practice</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="/static/items.css">
+</head>
+<body class="bg-light">
+  <main class="container py-5">
+    <div class="d-flex justify-content-between align-items-center mb-4">
+      <div><h1 class="display-6 fw-semibold">商品編集</h1><p class="text-body-secondary mb-0">商品情報と商品画像をまとめて編集します。</p></div>
+      <a class="btn btn-outline-primary" href="/items">商品一覧</a>
+    </div>
+    <form method="post" action="/items/{{.ID}}/edit" enctype="multipart/form-data">
+      <section class="card shadow-sm mb-4">
+        <div class="card-body row g-3">
+          <div class="col-md-4"><label for="name" class="form-label">商品名</label><input id="name" name="name" value="{{.Name}}" class="form-control" maxlength="100" required></div>
+          <div class="col-md-5"><label for="description" class="form-label">説明</label><input id="description" name="description" value="{{.Description}}" class="form-control" required></div>
+          <div class="col-md-3"><label for="price" class="form-label">価格</label><input id="price" name="price" value="{{.Price}}" type="number" min="0" step="0.01" class="form-control" required></div>
+          <div class="col-12"><label class="form-label">カテゴリ</label><div class="d-flex flex-wrap gap-3">{{range .Categories}}<label class="form-check"><input class="form-check-input" type="checkbox" name="category_id" value="{{.ID}}" {{if $.HasCategory .ID}}checked{{end}}><span class="form-check-label">{{.Name}}</span></label>{{else}}<span class="text-body-secondary">カテゴリがありません。</span>{{end}}</div></div>
+        </div>
+      </section>
+      <section class="card shadow-sm mb-4">
+        <div class="card-body">
+          <h2 class="h5">登録済み画像</h2>
+          {{range .Images}}
+          <div class="d-flex align-items-center gap-3 border-bottom py-2">
+            <img class="item-thumbnail" src="{{.URL}}" alt="商品画像">
+            <span class="text-break flex-grow-1">{{.URL}}</span>
+            <label class="form-check-label text-danger"><input class="form-check-input me-1" type="checkbox" name="delete_image_id" value="{{.ID}}">削除</label>
+          </div>
+          {{else}}<p class="text-body-secondary mb-0">登録済み画像はありません。</p>{{end}}
+        </div>
+      </section>
+      <section class="card shadow-sm mb-4">
+        <div class="card-body">
+          <label for="image" class="form-label">画像を追加</label>
+          <input id="image" name="image" type="file" accept="image/*" multiple class="form-control">
+          <div class="form-text">選択した画像は追加されます。既存画像を削除する場合は削除にチェックしてください。</div>
+        </div>
+      </section>
+      <div class="d-flex justify-content-end gap-2"><a class="btn btn-outline-secondary" href="/items">キャンセル</a><button class="btn btn-primary" type="submit">変更を保存</button></div>
+    </form>
+  </main>
+</body>
+</html>

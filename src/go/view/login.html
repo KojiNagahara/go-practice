@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ログイン | Go Practice</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+  <main class="container py-5">
+    <div class="row justify-content-center">
+      <div class="col-12 col-md-5 col-lg-4">
+        <section class="card shadow-sm">
+          <div class="card-body p-4">
+            <h1 class="h3 mb-4">ログイン</h1>
+            <form method="post" action="/login">
+              <div class="mb-3"><label for="username" class="form-label">ユーザー名</label><input id="username" name="username" class="form-control" autocomplete="username" required></div>
+              <div class="mb-4"><label for="password" class="form-label">パスワード</label><input id="password" name="password" type="password" class="form-control" autocomplete="current-password" required></div>
+              <button class="btn btn-primary w-100" type="submit">ログイン</button>
+            </form>
+            <div class="d-grid gap-2 mt-3">
+              <a class="btn btn-outline-danger" href="/oauth/google">Googleでログイン</a>
+              <a class="btn btn-outline-warning" href="/oauth/amazon">Amazonでログイン</a>
+              <a class="btn btn-link" href="/register">新規登録</a>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

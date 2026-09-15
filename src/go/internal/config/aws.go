@@ -1,0 +1,12 @@
+package config
+
+import (
+	"context"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+)
+
+func LoadAWS() (aws.Config, error) {
+	return awsconfig.LoadDefaultConfig(context.Background())
+}

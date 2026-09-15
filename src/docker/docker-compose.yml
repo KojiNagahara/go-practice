@@ -1,0 +1,57 @@
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: go-sample-mysql
+    environment:
+      MYSQL_DATABASE: go_practice
+      MYSQL_USER: go_app
+      MYSQL_PASSWORD: go_app_password
+      MYSQL_ROOT_PASSWORD: root_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "go_app", "-pgo_app_password"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - mysql-data:/var/lib/mysql
+      - ../sql/item.sql:/docker-entrypoint-initdb.d/item.sql:ro
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: go-sample-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    volumes:
+      - redis-data:/data
+
+  web:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: go-sample-docker
+    environment:
+      APP_ENV: local
+      PORT: "8080"
+      DATABASE_URL: go_app:go_app_password@tcp(mysql:3306)/go_practice?parseTime=true
+      REDIS_URL: redis://redis:6379
+      STORAGE_DRIVER: local
+      UPLOAD_DIR: /data/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8081:8080"
+    restart: unless-stopped
+    volumes:
+      - upload-data:/data/uploads
+
+volumes:
+  mysql-data:
+  redis-data:
+  upload-data:

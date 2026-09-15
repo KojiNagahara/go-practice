@@ -1,0 +1,739 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Multi-AZ AWS architecture for a Go application with ALB, NAT, Aurora, Redis, and Route53.
+
+Parameters:
+  AppInstanceType:
+    Type: String
+    Default: t3.small
+    AllowedValues:
+      - t3.small
+      - t3.medium
+      - t3.large
+  DatabaseInstanceClass:
+    Type: String
+    Default: db.t3.medium
+    AllowedValues:
+      - db.t3.medium
+      - db.t3.large
+      - db.r6g.large
+  RedisNodeType:
+    Type: String
+    Default: cache.t3.micro
+    AllowedValues:
+      - cache.t3.micro
+      - cache.t3.small
+      - cache.t3.medium
+  DomainName:
+    Type: String
+    Description: Root domain name
+  AppDomainName:
+    Type: String
+    Description: Public host name, e.g. www.kjnghr.com
+  AmiId:
+    Type: AWS::EC2::Image::Id
+    Description: Amazon Linux 2023 AMI ID
+  HealthCheckPath:
+    Type: String
+    Default: /health
+    Description: Health endpoint used by ALB target group checks
+  DbMasterUser:
+    Type: String
+    Description: Aurora master username
+    Default: admin
+
+Mappings:
+  SubnetConfig:
+    Vpc:
+      CIDR: 10.0.0.0/16
+    PublicA:
+      CIDR: 10.0.1.0/24
+    PublicB:
+      CIDR: 10.0.2.0/24
+    PrivateAppA:
+      CIDR: 10.0.11.0/24
+    PrivateAppB:
+      CIDR: 10.0.12.0/24
+    PrivateDataA:
+      CIDR: 10.0.21.0/24
+    PrivateDataB:
+      CIDR: 10.0.22.0/24
+
+Resources:
+  HostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Sub '${DomainName}.'
+      HostedZoneConfig:
+        Comment: !Sub 'Hosted zone for ${DomainName}'
+      HostedZoneTags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-hosted-zone'
+
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !FindInMap [SubnetConfig, Vpc, CIDR]
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: go-practice-vpc
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: go-practice-igw
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !FindInMap [SubnetConfig, PublicA, CIDR]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: public-subnet-a
+
+  PublicSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !FindInMap [SubnetConfig, PublicB, CIDR]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: public-subnet-b
+
+  PrivateAppSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !FindInMap [SubnetConfig, PrivateAppA, CIDR]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: private-app-subnet-a
+
+  PrivateAppSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !FindInMap [SubnetConfig, PrivateAppB, CIDR]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: private-app-subnet-b
+
+  PrivateDataSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !FindInMap [SubnetConfig, PrivateDataA, CIDR]
+      AvailabilityZone: !Select [0, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: private-data-subnet-a
+
+  PrivateDataSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !FindInMap [SubnetConfig, PrivateDataB, CIDR]
+      AvailabilityZone: !Select [1, !GetAZs '']
+      Tags:
+        - Key: Name
+          Value: private-data-subnet-b
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: public-route-table
+
+  PublicRoute:
+    Type: AWS::EC2::Route
+    DependsOn: AttachGateway
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetA
+      RouteTableId: !Ref PublicRouteTable
+
+  PublicSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicSubnetB
+      RouteTableId: !Ref PublicRouteTable
+
+  NatGatewayEipA:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGatewayEipB:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+
+  NatGatewayA:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEipA.AllocationId
+      SubnetId: !Ref PublicSubnetA
+      Tags:
+        - Key: Name
+          Value: nat-gateway-a
+
+  NatGatewayB:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt NatGatewayEipB.AllocationId
+      SubnetId: !Ref PublicSubnetB
+      Tags:
+        - Key: Name
+          Value: nat-gateway-b
+
+  PrivateAppRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: private-app-route-table-a
+
+  PrivateAppRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: private-app-route-table-b
+
+  PrivateAppRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateAppRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  PrivateAppRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateAppRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+
+  PrivateAppSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateAppSubnetA
+      RouteTableId: !Ref PrivateAppRouteTableA
+
+  PrivateAppSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateAppSubnetB
+      RouteTableId: !Ref PrivateAppRouteTableB
+
+  PrivateDataRouteTableA:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: private-data-route-table-a
+
+  PrivateDataRouteTableB:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: private-data-route-table-b
+
+  PrivateDataRouteA:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateDataRouteTableA
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayA
+
+  PrivateDataRouteB:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateDataRouteTableB
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGatewayB
+
+  PrivateDataSubnetARouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateDataSubnetA
+      RouteTableId: !Ref PrivateDataRouteTableA
+
+  PrivateDataSubnetBRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateDataSubnetB
+      RouteTableId: !Ref PrivateDataRouteTableB
+
+  S3GatewayEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Properties:
+      RouteTableIds:
+        - !Ref PrivateAppRouteTableA
+        - !Ref PrivateAppRouteTableB
+      ServiceName: !Sub 'com.amazonaws.${AWS::Region}.s3'
+      VpcId: !Ref Vpc
+      VpcEndpointType: Gateway
+
+  SecurityGroupAlb:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow ALB HTTP/HTTPS traffic
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: alb-sg
+
+  SecurityGroupApp:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from load balancer to app servers, and admin access from the VPC
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          SourceSecurityGroupId: !Ref SecurityGroupAlb
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: 10.0.0.0/16
+      Tags:
+        - Key: Name
+          Value: app-sg
+
+  SecurityGroupDb:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow DB access from app tier only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref SecurityGroupApp
+      Tags:
+        - Key: Name
+          Value: db-sg
+
+  SecurityGroupRedis:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow Redis access from app tier only
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 6379
+          ToPort: 6379
+          SourceSecurityGroupId: !Ref SecurityGroupApp
+      Tags:
+        - Key: Name
+          Value: redis-sg
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: go-practice-tg
+      VpcId: !Ref Vpc
+      Protocol: HTTP
+      Port: 8080
+      TargetType: instance
+      HealthCheckPath: !Ref HealthCheckPath
+      HealthCheckProtocol: HTTP
+      HealthCheckPort: traffic-port
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 5
+      Matcher:
+        HttpCode: '200-399'
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: go-practice-alb
+      Scheme: internet-facing
+      Type: application
+      Subnets:
+        - !Ref PublicSubnetA
+        - !Ref PublicSubnetB
+      SecurityGroups:
+        - !Ref SecurityGroupAlb
+      Tags:
+        - Key: Name
+          Value: go-practice-alb
+
+  AcmCertificate:
+    Type: AWS::CertificateManager::Certificate
+    Properties:
+      DomainName: !Sub '${AppDomainName}.${DomainName}'
+      ValidationMethod: DNS
+      DomainValidationOptions:
+        - DomainName: !Sub '${AppDomainName}.${DomainName}'
+          HostedZoneId: !Ref HostedZone
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-certificate'
+
+  HttpListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: redirect
+          RedirectConfig:
+            Protocol: HTTPS
+            Port: '443'
+            Host: '#{host}'
+            Path: '/#{path}'
+            Query: '#{query}'
+            StatusCode: HTTP_301
+
+  HttpsListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLoadBalancer
+      Port: 443
+      Protocol: HTTPS
+      Certificates:
+        - CertificateArn: !Ref AcmCertificate
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  ImageUploadBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Name
+          Value: !Sub '${AWS::StackName}-image-upload'
+        - Key: Project
+          Value: go-practice
+
+  ImageUploadBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ImageUploadBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ImageUploadBucket.Arn
+              - !Sub '${ImageUploadBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: false
+
+  AppInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${AWS::StackName}-app-instance-role'
+      Description: IAM role for Go application instances
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: ReadAuroraSecret
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:GetSecretValue
+                Resource: !Ref DbPasswordSecret
+        - PolicyName: ImageUploadBucketAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                 - s3:ListBucket
+                Resource: !GetAtt ImageUploadBucket.Arn
+              - Effect: Allow
+                Action:
+                 - s3:DeleteObject
+                 - s3:GetObject
+                 - s3:PutObject
+                Resource: !Sub '${ImageUploadBucket.Arn}/*'
+      Tags:
+        - Key: Project
+          Value: go-practice
+        - Key: Environment
+          Value: dev
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  AppInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub '${AWS::StackName}-app-instance-profile'
+      Roles:
+        - !Ref AppInstanceRole
+
+  AppLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: go-practice-app-template
+      LaunchTemplateData:
+        ImageId: !Ref AmiId
+        InstanceType: !Ref AppInstanceType
+        IamInstanceProfile:
+          Name: !Ref AppInstanceProfile
+        SecurityGroupIds:
+          - !Ref SecurityGroupApp
+        UserData:
+          Fn::Base64: |
+            #!/bin/bash -xe
+            yum update -y
+            amazon-linux-extras install -y nginx1
+            yum install -y docker
+            systemctl enable docker
+            systemctl start docker
+            echo "Go app server" > /var/www/html/index.html
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: go-practice-app
+
+  AppAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        - !Ref PrivateAppSubnetA
+        - !Ref PrivateAppSubnetB
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppLaunchTemplate
+        Version: !GetAtt AppLaunchTemplate.LatestVersionNumber
+      MinSize: 2
+      MaxSize: 4
+      DesiredCapacity: 2
+      TargetGroupARNs:
+        - !Ref TargetGroup
+      HealthCheckType: ELB
+      HealthCheckGracePeriod: 300
+      Tags:
+        - Key: Name
+          Value: go-practice-app-node
+          PropagateAtLaunch: true
+
+  AuroraSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Aurora private subnet group
+      SubnetIds:
+        - !Ref PrivateDataSubnetA
+        - !Ref PrivateDataSubnetB
+      Tags:
+        - Key: Name
+          Value: aurora-subnet-group
+
+  DbPasswordSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: go-practice-aurora-password
+      Description: Aurora master password for application database
+      GenerateSecretString:
+        SecretStringTemplate: !Sub '{"username":"${DbMasterUser}"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\\'
+
+  AuroraCluster:
+    Type: AWS::RDS::DBCluster
+    Properties:
+      Engine: aurora-mysql
+      DatabaseName: appdb
+      MasterUsername: !Ref DbMasterUser
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DbPasswordSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref AuroraSubnetGroup
+      VpcSecurityGroupIds:
+        - !Ref SecurityGroupDb
+      BackupRetentionPeriod: 7
+      StorageEncrypted: true
+      ServerlessV2ScalingConfiguration:
+        MinCapacity: 0.5
+        MaxCapacity: 2
+      Tags:
+        - Key: Name
+          Value: aurora-cluster
+
+  AuroraDBInstanceA:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      Engine: aurora-mysql
+      PubliclyAccessible: false
+      AvailabilityZone: !Select [0, !GetAZs '']
+      DBSubnetGroupName: !Ref AuroraSubnetGroup
+      Tags:
+        - Key: Name
+          Value: aurora-instance-a
+
+  AuroraDBInstanceB:
+    Type: AWS::RDS::DBInstance
+    Properties:
+      DBClusterIdentifier: !Ref AuroraCluster
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      Engine: aurora-mysql
+      PubliclyAccessible: false
+      AvailabilityZone: !Select [1, !GetAZs '']
+      DBSubnetGroupName: !Ref AuroraSubnetGroup
+      Tags:
+        - Key: Name
+          Value: aurora-instance-b
+
+  RedisSubnetGroup:
+    Type: AWS::ElastiCache::SubnetGroup
+    Properties:
+      Description: Redis private subnet group
+      SubnetIds:
+        - !Ref PrivateDataSubnetA
+        - !Ref PrivateDataSubnetB
+
+  RedisCluster:
+    Type: AWS::ElastiCache::ReplicationGroup
+    Properties:
+      AutomaticFailoverEnabled: true
+      ReplicationGroupDescription: Redis for session data
+      CacheNodeType: !Ref RedisNodeType
+      Engine: redis
+      NumNodeGroups: 1
+      ReplicasPerNodeGroup: 1
+      CacheSubnetGroupName: !Ref RedisSubnetGroup
+      SecurityGroupIds:
+        - !Ref SecurityGroupRedis
+      Tags:
+        - Key: Name
+          Value: redis-session-cluster
+
+  Alb5xxAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: go-practice-alb-5xx
+      MetricName: HTTPCode_Target_5XX_Count
+      Namespace: AWS/ApplicationELB
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 10
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: LoadBalancer
+          Value: !GetAtt ApplicationLoadBalancer.LoadBalancerFullName
+
+  AuroraCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: go-practice-aurora-cpu
+      MetricName: CPUUtilization
+      Namespace: AWS/RDS
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+      TreatMissingData: notBreaching
+      Dimensions:
+        - Name: DBClusterIdentifier
+          Value: !Ref AuroraCluster
+
+  DnsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZone
+      Name: !Sub '${AppDomainName}.${DomainName}.'
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt ApplicationLoadBalancer.DNSName
+        HostedZoneId: !GetAtt ApplicationLoadBalancer.CanonicalHostedZoneID
+        EvaluateTargetHealth: true
+
+Outputs:
+  AppUrl:
+    Description: Public URL of the application
+    Value: !Sub 'https://${AppDomainName}.${DomainName}/'
+  AlbDnsName:
+    Description: ALB DNS name
+    Value: !GetAtt ApplicationLoadBalancer.DNSName
+  NameServers:
+    Description: Name servers to configure at the domain registrar
+    Value: !Join [',', !GetAtt HostedZone.NameServers]
+  AuroraEndpoint:
+    Description: Aurora endpoint
+    Value: !GetAtt AuroraCluster.Endpoint.Address
+  RedisEndpoint:
+    Description: Redis endpoint
+    Value: !GetAtt RedisCluster.PrimaryEndPoint.Address
+  ImageUploadBucketName:
+    Description: Private S3 bucket name for image uploads
+    Value: !Ref ImageUploadBucket

@@ -1,0 +1,9 @@
+.git
+.gitignore
+bin
+tmp
+*.log
+docker
+go/.git
+go/bin
+go/tmp
